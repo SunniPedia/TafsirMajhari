@@ -1,0 +1,223 @@
+name: Quran Tafsir JSON Builder - Majhari (V4 Final with Intro Rule)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'majhari/**'
+
+jobs:
+  build-tafsir:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build All Tafsir JSONs (V4 Logic)
+        run: |
+          python3 << 'PY'
+          import os
+          import re
+          import json
+          import pathlib
+
+          INPUT_DIR = "majhari"
+          OUTPUT_DIR = "output-tafsir"
+          os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+          bn_to_en = str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')
+          def bn2en(s): return s.translate(bn_to_en)
+          def extract_numbers_from_bengali(s):
+              en = bn2en(s)
+              return [int(n) for n in re.findall(r'\d+', en)]
+          def get_ayah_number(verses_field):
+              s = str(verses_field).strip()
+              en = bn2en(s)
+              m = re.search(r'\d+', en)
+              if m:
+                  return int(m.group(0))
+              try:
+                  return int(en)
+              except:
+                  return None
+
+          # Regex from Master Prompt V4
+          heading_pattern = r'^1সূরা (.+) : আয়াত ([০-৯,\s]+)'
+
+          # Find all txt files in majhari folder: pattern (suraNumber)-Sura-Name.txt
+          txt_files = list(pathlib.Path(INPUT_DIR).glob("*.txt"))
+          print(f"Found {len(txt_files)} txt files in {INPUT_DIR}")
+
+          for txt_path in txt_files:
+              filename = txt_path.name
+              print(f"\n{'='*60}\nProcessing: {filename}")
+              # Extract suraNumber from filename: e.g., 017-Sura-Bani-Israil.txt -> 17
+              m_num = re.match(r'^0*(\d+)-', filename)
+              if not m_num:
+                  print(f"  Skip: cannot extract suraNumber from {filename}")
+                  continue
+              sura_number_int = int(m_num.group(1))
+              sura_number_str = str(sura_number_int)  # for output file name: (suranumber).json
+
+              # Find corresponding json file
+              # Try: 17.json, 017.json, 17.json in majhari folder
+              possible_json_names = [
+                  f"{sura_number_int}.json",
+                  f"{sura_number_int:03d}.json",
+                  f"{m_num.group(1)}.json",
+                  f"{sura_number_str}.json"
+              ]
+              json_path = None
+              for jname in possible_json_names:
+                  candidate = pathlib.Path(INPUT_DIR) / jname
+                  if candidate.exists():
+                      json_path = candidate
+                      break
+              # Also search any json that starts with sura number
+              if json_path is None:
+                  for jf in pathlib.Path(INPUT_DIR).glob("*.json"):
+                      if re.match(rf'^0*{sura_number_int}\.json$', jf.name):
+                          json_path = jf
+                          break
+
+              if json_path is None:
+                  print(f"  ERROR: No matching json found for sura {sura_number_int} in {INPUT_DIR}")
+                  continue
+
+              print(f"  Matched JSON: {json_path.name}")
+
+              with open(txt_path, 'r', encoding='utf-8') as f:
+                  txt_content = f.read()
+
+              matches = list(re.finditer(heading_pattern, txt_content, re.MULTILINE))
+              print(f"  Headings found: {len(matches)}")
+
+              if not matches:
+                  print(f"  WARNING: No headings found with regex in {filename}")
+                  continue
+
+              # Intro Handling - V4 Updated Rule (Do not invent)
+              first_start = matches[0].start()
+              potential_intro = txt_content[0:first_start].strip()
+              if len(potential_intro) > 20:
+                  intro_text = potential_intro
+                  intro_found = True
+              else:
+                  intro_text = None
+                  intro_found = False
+              print(f"  Intro len: {len(potential_intro)} | intro_found: {intro_found}")
+
+              sura_name = matches[0].group(1).strip()
+
+              # Build tafsir_map
+              tafsir_map = {}
+              for i, m in enumerate(matches):
+                  sura_name_raw = m.group(1).strip()
+                  ayah_part_raw = m.group(2)
+                  numbers = extract_numbers_from_bengali(ayah_part_raw)
+
+                  ayah_list_str = re.sub(r'\s+', ' ', ayah_part_raw.strip()).strip()
+                  clean_heading = f"সূরা {sura_name_raw} : আয়াত {ayah_list_str}"
+
+                  body_start = m.end()
+                  body_end = matches[i+1].start() if i+1 < len(matches) else len(txt_content)
+                  body = txt_content[body_start:body_end].strip()
+
+                  final_value = f"{clean_heading}\n\n{body}"
+                  for num in numbers:
+                      tafsir_map[num] = final_value
+
+              print(f"  tafsir_map size: {len(tafsir_map)}")
+              missing = [n for n in range(1, max(tafsir_map.keys())+1) if n not in tafsir_map] if tafsir_map else []
+              if missing:
+                  print(f"  Missing ayahs in map: {missing}")
+
+              # Load and update JSON
+              with open(json_path, 'r', encoding='utf-8') as f:
+                  data = json.load(f)
+
+              for entry in data:
+                  verses_field = entry.get('verses', '')
+                  ayah_num = get_ayah_number(verses_field)
+                  if ayah_num is None:
+                      # fallback using id if possible, but keep as is
+                      ayah_num = -1
+
+                  # Add 9 new keys with placeholder logic
+                  entry['ibnabbas'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['nurulirfan'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['tabari'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['ibnkasir'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['kurtubi'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['baizabi'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['rejviya'] = "তাফসির যুক্ত করা হয়নি"
+                  entry['words'] = "শব্দার্থ যুক্ত করা হয়নি"
+
+                  if ayah_num == 0:
+                      if intro_found:
+                          entry['majhari'] = f"সূরা {sura_name} : পরিচিতি ও ভূমিকা\n\n{intro_text}"
+                      else:
+                          entry['majhari'] = "তাফসির যুক্ত করা হয়নি"
+                  else:
+                      if ayah_num in tafsir_map:
+                          entry['majhari'] = tafsir_map[ayah_num]
+                      else:
+                          entry['majhari'] = "তাফসির যুক্ত করা হয়নি"
+
+              # Verification
+              fail_count = 0
+              for e in data:
+                  vn = get_ayah_number(e.get('verses',''))
+                  mh = e.get('majhari','')
+                  if vn == 0:
+                      if intro_found:
+                          if len(mh) <= 100:
+                              fail_count += 1
+                      else:
+                          if mh != "তাফসির যুক্ত করা হয়নি":
+                              fail_count += 1
+                  else:
+                      if len(mh) <= 1000 and vn is not None and vn != -1:
+                          # Only warn if map was supposed to have it
+                          if vn in tafsir_map:
+                              fail_count += 1
+              if fail_count > 0:
+                  print(f"  Verification WARNING: {fail_count} entries failed length check")
+              else:
+                  print(f"  Verification PASSED")
+
+              # Save to output-tafsir/(suranumber).json
+              out_path = pathlib.Path(OUTPUT_DIR) / f"{sura_number_int}.json"
+              with open(out_path, 'w', encoding='utf-8') as out:
+                  json.dump(data, out, ensure_ascii=False, indent=2)
+              print(f"  Saved -> {out_path}")
+
+          print(f"\n{'='*60}\nAll done. Output dir: {OUTPUT_DIR}")
+          print(f"Files in output: {os.listdir(OUTPUT_DIR)}")
+          PY
+
+      - name: List Output Files
+        run: |
+          ls -lh output-tafsir/
+          echo "Total files: $(ls output-tafsir/ | wc -l)"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: output-tafsir
+          path: output-tafsir/
+          retention-days: 7
+
+      - name: Commit Output (Optional)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add output-tafsir/ || true
+          git diff --cached --quiet || git commit -m "Build tafsir JSONs - auto generated [skip ci]" || true
+          git push || echo "Push skipped - no permission or no changes"
