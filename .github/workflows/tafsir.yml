@@ -33,9 +33,60 @@ jobs:
 
           bn_to_en = str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')
           def bn2en(s): return s.translate(bn_to_en)
+
           def extract_numbers_from_bengali(s):
+              """
+              NEW: Handles both comma and hyphen range formats
+              Examples:
+                "২, ৩, ৪" -> [2,3,4]
+                "২-৫" -> [2,3,4,5]
+                "১০-২০" -> [10..20]
+                "২, ৪-৬, ১০" -> [2,4,5,6,10]
+                "১১, ১২-১৫" -> [11,12,13,14,15]
+              Supports Bengali dash variants: - – — 
+              """
               en = bn2en(s)
-              return [int(n) for n in re.findall(r'\d+', en)]
+              # Normalize all dash types to hyphen
+              en = en.replace('–', '-').replace('—', '-').replace('−', '-')
+              # Also normalize Bengali comma etc already handled
+              numbers = []
+              # Split by comma first
+              parts = re.split(r'[,\n]+', en)
+              for part in parts:
+                  part = part.strip()
+                  if not part:
+                      continue
+                  # If part contains hyphen -> range
+                  if '-' in part:
+                      # Could be "2-5" or "2 - 5" or "2-5 6" messy, extract all nums in part
+                      range_match = re.findall(r'\d+', part)
+                      if len(range_match) >= 2:
+                          try:
+                              start = int(range_match[0])
+                              end = int(range_match[1])
+                              if start > end:
+                                  start, end = end, start
+                              numbers.extend(list(range(start, end+1)))
+                          except:
+                              # fallback: add what we found
+                              numbers.extend([int(x) for x in range_match])
+                      elif range_match:
+                          numbers.append(int(range_match[0]))
+                  else:
+                      # single numbers
+                      nums = re.findall(r'\d+', part)
+                      for n in nums:
+                          numbers.append(int(n))
+              # Remove duplicates while preserving order, then sort? Keep sorted unique for mapping
+              # For mapping we need all unique numbers
+              seen = set()
+              uniq = []
+              for n in numbers:
+                  if n not in seen:
+                      seen.add(n)
+                      uniq.append(n)
+              return sorted(uniq)
+
           def get_ayah_number(verses_field):
               s = str(verses_field).strip()
               en = bn2en(s)
@@ -47,8 +98,8 @@ jobs:
               except:
                   return None
 
-          # Regex from Master Prompt V4
-          heading_pattern = r'^1সূরা (.+) : আয়াত ([০-৯,\s]+)'
+          # Regex from Master Prompt V4 - UPDATED to include hyphen range
+          heading_pattern = r'^1সূরা (.+) : আয়াত ([০-৯,\s\-–—]+)'
 
           # Find all txt files in majhari folder: pattern (suraNumber)-Sura-Name.txt
           txt_files = list(pathlib.Path(INPUT_DIR).glob("*.txt"))
